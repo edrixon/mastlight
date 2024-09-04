@@ -24,6 +24,8 @@
 
 #define EEPROM_WRITE_TICKS 500 // Number of ticks for deferred eeprom write
 
+#define FLASH_ON_MASK  0x0124
+
 typedef struct
 {
     char *seqName;
@@ -41,6 +43,7 @@ int seqMaxBit;
 int seqTickCount;
 int seqSetTickCount;
 boolean seqInc;
+boolean seqOn;
 
 void seqRotate(void);
 void seqKnightRider(void);
@@ -70,7 +73,6 @@ int eepromWriteTicks;
 
 void writeConfig()
 {
-    Serial.println("Saving configuration");
     EEPROM.put(0, sysConfig);
 }
 
@@ -83,23 +85,11 @@ void defaultConfig()
 
 void readConfig()
 {
-    Serial.println("Reading configuration");
     EEPROM.get(0, sysConfig);
     if(sysConfig.configSize != sizeof(sysConfig))
     {
-        Serial.println("No configuration found!");
         defaultConfig();
         writeConfig();
-    }
-    else
-    {
-        Serial.println("Read configuration OK");
-        Serial.print(" Config size = ");
-        Serial.print(sysConfig.configSize);
-        Serial.println(" bytes");
-
-        Serial.print(" Sequence = ");
-        Serial.println(sysConfig.sequence);
     }
 }
 
@@ -213,6 +203,36 @@ void seqRandom()
             setGpioBit(seqBit);
         }
     }
+}
+
+void seqFlash3()
+{
+	if(firstTime == true)
+	{
+		firstTime = false;
+		seqOn = true;
+		gpioData  = gpioData | FLASH_ON_MASK;
+		writeGpio();
+	}
+	else
+    {
+		seqTickCount++;
+		if(seqTickCount == seqSetTickCount)
+		{
+			seqTickCount = 0;
+			if(seqOn == true)
+			{
+				seqOn = false;
+				clearGpioData();
+			}
+			else
+			{
+				seqOn = true;
+				gpioData = gpioData | FLASH_ON_MASK;
+				writeGpio();
+			}
+		}
+	}
 }
 
 void seqKnightRider()
@@ -376,8 +396,6 @@ void setup()
     seqButtonPressed = false;
     seqButtonMask = 1 << SEQ_BUTTON_BIT;
 
-    readSpeedPot();
-
     readConfig();
 
     Serial.println("");
@@ -399,7 +417,6 @@ void loop()
         heartbeatLed();
 
         sequenceDefs[sysConfig.sequence].fn();
-
     }
 
     // Check sequence button
