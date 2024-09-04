@@ -1,13 +1,14 @@
+#include <EEPROM.h>
 
 #include "gpio.h"
 
 // Bits in gpiopData used for mastlight LEDs
-#define MIN_BIT       0
-#define MAX_BIT       9
+#define MIN_LED_BIT   0
+#define MAX_LED_BIT   9
 
 // Bits on PIO ports - Port A is 0-7, Port B is 8-15
-#define SEQ_BUTTON_BIT 14    // sequence button
 #define HB_LED_BIT    10     // heartbeat LED
+#define SEQ_BUTTON_BIT 14    // sequence button
 
 // Arduino pins
 #define SPEED_PIN     A0     // Speed setting pot
@@ -21,11 +22,19 @@
 
 #define HB_TICKS      10     // heartbeat every (TICK_TIME * HB_TICKS) = 100ms
 
+#define EEPROM_WRITE_TICKS 500 // Number of ticks for deferred eeprom write
+
 typedef struct
 {
-    char *name;
-    void fn(void);
+    char *seqName;
+    void (*fn)(void);
 } sequenceType;
+
+typedef struct
+{
+    size_t configSize;
+    int sequence;
+} configType;
 
 int seqBit;
 int seqMaxBit;
@@ -33,10 +42,10 @@ int seqTickCount;
 int seqSetTickCount;
 boolean seqInc;
 
-void seqRotate();
-void seqKnightRider();
-void seqRandom();
-void seqRotate2();
+void seqRotate(void);
+void seqKnightRider(void);
+void seqRandom(void);
+void seqRotate2(void);
 
 sequenceType sequenceDefs[] =
 {
@@ -46,7 +55,7 @@ sequenceType sequenceDefs[] =
     { "ROTATE2",     seqRotate2 },
     { "",            NULL }
 };
-int sequence;
+
 boolean firstTime;
 
 boolean seqButtonPressed;
@@ -55,6 +64,44 @@ unsigned short int seqButtonMask;
 int heartbeatTicks;
 
 unsigned long lastMillis;
+
+configType sysConfig;
+int eepromWriteTicks;
+
+void writeConfig()
+{
+    Serial.println("Saving configuration");
+    EEPROM.put(0, sysConfig);
+}
+
+void defaultConfig()
+{
+    Serial.println("Loading default configuration");
+    sysConfig.configSize = sizeof(sysConfig);
+    sysConfig.sequence = 0;
+}
+
+void readConfig()
+{
+    Serial.println("Reading configuration");
+    EEPROM.get(0, sysConfig);
+    if(sysConfig.configSize != sizeof(sysConfig))
+    {
+        Serial.println("No configuration found!");
+        defaultConfig();
+        writeConfig();
+    }
+    else
+    {
+        Serial.println("Read configuration OK");
+        Serial.print(" Config size = ");
+        Serial.print(sysConfig.configSize);
+        Serial.println(" bytes");
+
+        Serial.print(" Sequence = ");
+        Serial.println(sysConfig.sequence);
+    }
+}
 
 boolean gpioSequenceButtonPressed()
 {
@@ -98,7 +145,7 @@ boolean seqButtonPressedAndReleased()
 void newSequence()
 {
     Serial.print("Starting ");
-    Serial.print(sequenceDefs[sequence].name);
+    Serial.print(sequenceDefs[sysConfig.sequence].seqName);
     Serial.println(" sequence");
 
     Serial.print("  Interval = ");
@@ -119,12 +166,17 @@ void handleSequenceButton()
     {
         // button was pressed
 
-        sequence++;
-        if(sequenceDefs[sequence].fn == NULL)
+        sysConfig.sequence++;
+        if(sequenceDefs[sysConfig.sequence].seqName[0] == '\0')
         {
-            sequence = 0;
+            sysConfig.sequence = 0;
         }
 
+        eepromWriteTicks = EEPROM_WRITE_TICKS;
+        Serial.print("EEPROM write in ");
+        Serial.print(eepromWriteTicks * TICK_TIME);
+        Serial.println(" milliseconds");
+    
         newSequence();
    }
 }
@@ -145,8 +197,8 @@ void seqRandom()
     {
         firstTime = false;
         randomSeed(millis());
-        seqMaxBit = MAX_BIT + 1;
-        seqBit = random(MIN_BIT, seqMaxBit);
+        seqMaxBit = MAX_LED_BIT + 1;
+        seqBit = random(MIN_LED_BIT, seqMaxBit);
         setGpioBit(seqBit);
     }
     else
@@ -157,7 +209,7 @@ void seqRandom()
             seqTickCount = 0;
             
             clearGpioBit(seqBit);
-            seqBit = random(MIN_BIT, seqMaxBit);
+            seqBit = random(MIN_LED_BIT, seqMaxBit);
             setGpioBit(seqBit);
         }
     }
@@ -168,8 +220,8 @@ void seqKnightRider()
     if(firstTime == true)
     {
         firstTime = false;
-        seqBit = MIN_BIT;
-        seqMaxBit = MAX_BIT;
+        seqBit = MIN_LED_BIT;
+        seqMaxBit = MAX_LED_BIT;
         seqInc = true;
         setGpioBit(seqBit);
     }
@@ -196,7 +248,7 @@ void seqKnightRider()
             }
             else
             {
-                if(seqBit == MIN_BIT)
+                if(seqBit == MIN_LED_BIT)
                 {
                     seqInc = true;
                     seqBit++;
@@ -216,8 +268,8 @@ void seqRotate()
     if(firstTime == true)
     {
         firstTime = false;
-        seqBit = MIN_BIT;
-        seqMaxBit = MAX_BIT;
+        seqBit = MIN_LED_BIT;
+        seqMaxBit = MAX_LED_BIT;
         setGpioBit(seqBit);
     }
     else
@@ -231,7 +283,7 @@ void seqRotate()
 
             if(seqBit == seqMaxBit)
             {
-                seqBit = MIN_BIT;
+                seqBit = MIN_LED_BIT;
             }
             else
             {
@@ -247,8 +299,8 @@ void seqRotate2()
     if(firstTime == true)
     {
         firstTime = false;
-        seqBit = MIN_BIT;
-        seqMaxBit = MAX_BIT / 2;
+        seqBit = MIN_LED_BIT;
+        seqMaxBit = MAX_LED_BIT / 2;
         setGpioBit(seqBit);
     }
     else
@@ -263,7 +315,7 @@ void seqRotate2()
 
             if(seqBit == seqMaxBit)
             {
-                seqBit = MIN_BIT;
+                seqBit = MIN_LED_BIT;
             }
             else
             {
@@ -294,6 +346,19 @@ void heartbeatLed()
     }
 }
 
+void eepromWrite()
+{
+    if(eepromWriteTicks)
+    {
+        eepromWriteTicks--;
+        if(eepromWriteTicks == 0)
+        {
+            // save config data
+            writeConfig();
+        }
+    }
+}
+
 void setup()
 {
     Serial.begin(9600);
@@ -313,11 +378,11 @@ void setup()
 
     readSpeedPot();
 
+    readConfig();
+
     Serial.println("");
 
-    sequence = 0
     newSequence();
-
 }
 
 void loop()
@@ -329,9 +394,11 @@ void loop()
     {
         lastMillis = millisNow;
 
+        eepromWrite();
+
         heartbeatLed();
 
-        sequenceDefs[sequence].fn();
+        sequenceDefs[sysConfig.sequence].fn();
 
     }
 
@@ -340,4 +407,5 @@ void loop()
 
     // Check speed pot
     readSpeedPot();
+
 }

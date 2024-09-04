@@ -125,7 +125,7 @@ void clearGpio()
 void initPio()
 {
     // Make sure GPIO board is plugged in
-    checkPioConnected()
+    checkPioConnected();
 
     // direction registers IODIRA = 0x00 IODIRB = 0xc0
     writePioWord(IODIR, 0xc000);
