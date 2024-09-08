@@ -1,30 +1,34 @@
 #include <EEPROM.h>
+#include <DMXSerial.h>
 
 #include "gpio.h"
 
 // Bits in gpiopData used for mastlight LEDs
-#define MIN_LED_BIT   0
-#define MAX_LED_BIT   9
+#define MIN_LED_BIT    0
+#define MAX_LED_BIT    9
 
 // Bits on PIO ports - Port A is 0-7, Port B is 8-15
-#define HB_LED_BIT    10     // heartbeat LED
-#define SEQ_BUTTON_BIT 14    // sequence button
+#define HB_LED_BIT     10     // heartbeat LED
+#define SEQ_BUTTON_BIT 14     // sequence button
 
 // Arduino pins
-#define SPEED_PIN     A0     // Speed setting pot
+#define SPEED_PIN      A0     // Speed setting pot
 
 // System tick period
-#define TICK_TIME     10     // 10 milliseconds
+#define TICK_TIME      10     // 10 milliseconds
 
 // On time = "speed" * TICK_TIME 
-#define MIN_SPEED     100    // 1s
-#define MAX_SPEED     1      // 10ms
+#define MIN_SPEED      100    // 1s
+#define MAX_SPEED      1      // 10ms
 
-#define HB_TICKS      10     // heartbeat every (TICK_TIME * HB_TICKS) = 100ms
+#define HB_TICKS       10     // heartbeat every (TICK_TIME * HB_TICKS) = 100ms
 
 #define EEPROM_WRITE_TICKS 500 // Number of ticks for deferred eeprom write
 
 #define FLASH_ON_MASK  0x0124
+
+#define DMX_ADDR       1      // Base DMX address  DMX_ADDR > 127, light on  DMX_ADDR + 1, speed  DMX_ADDR + 2 > 127, sequence button pressed
+#define DMX_TIMEOUT    5000   // in milliseconds
 
 typedef struct
 {
@@ -49,6 +53,7 @@ void seqRotate(void);
 void seqKnightRider(void);
 void seqRandom(void);
 void seqRotate2(void);
+void seqFlash(void);
 
 sequenceType sequenceDefs[] =
 {
@@ -56,6 +61,7 @@ sequenceType sequenceDefs[] =
     { "KNIGHTRIDER", seqKnightRider },
     { "RANDOM",      seqRandom },
     { "ROTATE2",     seqRotate2 },
+    { "FLASH",       seqFlash },
     { "",            NULL }
 };
 
@@ -71,6 +77,13 @@ unsigned long lastMillis;
 configType sysConfig;
 int eepromWriteTicks;
 
+int dmxRed;
+int dmxGreen;
+int dmxBlue;
+boolean gotDmxData;
+
+boolean lightsOn;
+
 void writeConfig()
 {
     EEPROM.put(0, sysConfig);
@@ -78,7 +91,6 @@ void writeConfig()
 
 void defaultConfig()
 {
-    Serial.println("Loading default configuration");
     sysConfig.configSize = sizeof(sysConfig);
     sysConfig.sequence = 0;
 }
@@ -109,13 +121,27 @@ boolean gpioSequenceButtonPressed()
     }
 }
 
+boolean dmxSequenceButtonPressed()
+{
+    boolean rtn;
+
+    rtn = false;
+    
+    if(gotDmxData == true && DMXSerial.read(dmxBlue) > 127)
+    {
+        rtn = true;
+    }
+
+    return rtn;
+}
+
 boolean seqButtonPressedAndReleased()
 {
     boolean rtn;
 
     rtn = false;
     
-    if(gpioSequenceButtonPressed() == true)
+    if(gpioSequenceButtonPressed() == true || dmxSequenceButtonPressed())
     {
         seqButtonPressed = true;
     }
@@ -134,14 +160,6 @@ boolean seqButtonPressedAndReleased()
 
 void newSequence()
 {
-    Serial.print("Starting ");
-    Serial.print(sequenceDefs[sysConfig.sequence].seqName);
-    Serial.println(" sequence");
-
-    Serial.print("  Interval = ");
-    Serial.print(seqSetTickCount * TICK_TIME);
-    Serial.println(" milliseconds");
- 
     firstTime = true;
     seqTickCount = 0;
 
@@ -163,18 +181,13 @@ void handleSequenceButton()
         }
 
         eepromWriteTicks = EEPROM_WRITE_TICKS;
-        Serial.print("EEPROM write in ");
-        Serial.print(eepromWriteTicks * TICK_TIME);
-        Serial.println(" milliseconds");
-    
         newSequence();
-   }
+    }
 }
 
 void readSpeedPot()
 {
-    seqSetTickCount =
-                 map(analogRead(SPEED_PIN), 0, 1024, MAX_SPEED, MIN_SPEED + 1);
+    seqSetTickCount = map(analogRead(SPEED_PIN), 0, 1024, MAX_SPEED, MIN_SPEED + 1);
     if(seqTickCount > seqSetTickCount)
     {
         seqTickCount = seqSetTickCount - 2;
@@ -205,34 +218,34 @@ void seqRandom()
     }
 }
 
-void seqFlash3()
+void seqFlash()
 {
-	if(firstTime == true)
-	{
-		firstTime = false;
-		seqOn = true;
-		gpioData  = gpioData | FLASH_ON_MASK;
-		writeGpio();
-	}
-	else
+    if(firstTime == true)
     {
-		seqTickCount++;
-		if(seqTickCount == seqSetTickCount)
-		{
-			seqTickCount = 0;
-			if(seqOn == true)
-			{
-				seqOn = false;
-				clearGpioData();
-			}
-			else
-			{
-				seqOn = true;
-				gpioData = gpioData | FLASH_ON_MASK;
-				writeGpio();
-			}
-		}
-	}
+        firstTime = false;
+        seqOn = true;
+        gpioData  = gpioData | FLASH_ON_MASK;
+        writeGpio();
+    }
+    else
+    {
+        seqTickCount++;
+        if(seqTickCount == seqSetTickCount)
+        {
+            seqTickCount = 0;
+            if(seqOn == true)
+            {
+                seqOn = false;
+                clearGpio();
+            }
+            else
+            {
+                seqOn = true;
+                gpioData = gpioData | FLASH_ON_MASK;
+                writeGpio();
+            }
+        }
+    }
 }
 
 void seqKnightRider()
@@ -379,11 +392,43 @@ void eepromWrite()
     }
 }
 
+void handleDmx()
+{
+    if(DMXSerial.noDataSince() > DMX_TIMEOUT)
+    {
+        lightsOn = true;
+        gotDmxData = false;
+    }
+    else
+    {   
+        gotDmxData = true;
+        if(DMXSerial.read(dmxRed) > 127)
+        {    
+            if(lightsOn == false)
+            {
+                lightsOn = true;
+                newSequence();
+            }
+        }
+        else
+        {
+            if(lightsOn == true)
+            {
+                lightsOn = false;
+                clearGpio();
+            }
+        }
+
+        seqSetTickCount = map(DMXSerial.read(dmxGreen), 0, 255, MIN_SPEED +1, MAX_SPEED);
+        if(seqTickCount > seqSetTickCount)
+        {
+            seqTickCount = seqSetTickCount - 2;
+        }
+    }
+}
+
 void setup()
 {
-    Serial.begin(9600);
-    Serial.println("Mastlight controller");
-
     pinMode(LED_BUILTIN, OUTPUT);
     digitalWrite(LED_BUILTIN, LOW);
 
@@ -398,7 +443,11 @@ void setup()
 
     readConfig();
 
-    Serial.println("");
+    dmxRed = DMX_ADDR;
+    dmxGreen = DMX_ADDR + 1;
+    dmxBlue = DMX_ADDR + 2;
+    gotDmxData = false;
+    DMXSerial.init(DMXReceiver);
 
     newSequence();
 }
@@ -416,13 +465,22 @@ void loop()
 
         heartbeatLed();
 
-        sequenceDefs[sysConfig.sequence].fn();
+        if(lightsOn == true)
+        {
+            sequenceDefs[sysConfig.sequence].fn();
+        }
     }
+
+    // Deal with DMX data
+    handleDmx();
 
     // Check sequence button
     handleSequenceButton();
 
-    // Check speed pot
-    readSpeedPot();
-
+    // Look at speed pot if there wasn't any DMX
+    if(gotDmxData == false)
+    {
+        // Check speed pot
+        readSpeedPot();    
+    }
 }

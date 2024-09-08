@@ -14,15 +14,10 @@ unsigned short int gpioData;
 
 void checkPioConnected()
 {
-    Serial.print("  I2C . . . . . ");
     Wire.begin();
-    Serial.println("OK");
-
-    Serial.print("  PIO . . . . . ");
     Wire.beginTransmission(PIO_I2C_ADDR);
     if(Wire.endTransmission() != 0)
     {
-        Serial.println("not found!!!");
         while(1)
         {
             digitalWrite(LED_BUILTIN, HIGH);
@@ -31,7 +26,6 @@ void checkPioConnected()
             delay(1000);
         }
     }
-    Serial.println("OK");
 }
 
 void wireBeginTransmission(unsigned char busAddr)
@@ -45,11 +39,6 @@ int wireEndTransmission()
     int rtn;
   
     rtn = Wire.endTransmission();
-    if(rtn != 0)
-    {
-        Serial.print("I2C error - ");
-        Serial.println(rtn);
-    }
 
     digitalWrite(LED_BUILTIN, LOW);
   
